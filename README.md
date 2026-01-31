@@ -1,7 +1,5 @@
 ﻿# AI_Marketing_Asset_Generation
 
-# AI Marketing Asset Generator
-
 A full-stack web application that uses AI to generate marketing content such as slogans, captions, and promotional copy based on user input.
 
 ## Tech Stack
@@ -32,4 +30,5 @@ cd server && npm start
 # Frontend
 cd client && npm start
 ```
+
 
