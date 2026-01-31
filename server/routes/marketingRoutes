@@ -1,0 +1,274 @@
+const express = require('express');
+const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs').promises;
+const Groq = require('groq-sdk');
+//const OpenAI = require('openai');
+
+// Configure multer for image uploads
+const storage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    const uploadDir = path.join(__dirname, '../uploads');
+    try {
+      await fs.mkdir(uploadDir, { recursive: true });
+      cb(null, uploadDir);
+    } catch (error) {
+      cb(error);
+    }
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'product-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|webp/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'));
+    }
+  }
+});
+
+// Initialize API clients
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY
+});
+
+/**
+ * Generate Marketing Copy using Groq
+ */
+async function generateMarketingCopy(productDetails) {
+  const { productName, description, category, targetAudience, platform, tone } = productDetails;
+
+  const prompt = `You are an expert marketing copywriter. Create compelling marketing copy for the following product:
+
+Product Name: ${productName}
+Description: ${description}
+${category ? `Category: ${category}` : ''}
+${targetAudience ? `Target Audience: ${targetAudience}` : ''}
+Platform: ${platform}
+Tone: ${tone}
+
+Requirements:
+1. Write platform-optimized copy (character limits, hashtags, emojis where appropriate)
+2. Use the specified tone (${tone})
+3. Include a clear call-to-action
+4. Make it engaging and conversion-focused
+5. For Instagram/TikTok: Include relevant hashtags (3-5)
+6. For LinkedIn: Professional and value-focused
+7. For Twitter: Concise and punchy (280 characters or less if possible)
+
+Generate the marketing copy now:`;
+
+  try {
+    const completion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      model: 'llama-3.3-70b-versatile', // Fast and high quality
+      temperature: 0.7,
+      max_tokens: 1000,
+    });
+
+    return completion.choices[0]?.message?.content || 'Error generating copy';
+  } catch (error) {
+    console.error('Error generating marketing copy with Groq:', error);
+    throw new Error('Failed to generate marketing copy: ' + error.message);
+  }
+}
+
+/**
+ * Generate Social Media Image using DALL-E 3
+ */
+/*
+async function generateSocialMediaImage(productDetails, productImagePath = null) {
+  const { productName, description, platform, category } = productDetails;
+
+  // Create a detailed prompt for DALL-E
+  let imagePrompt = `Create a professional, eye-catching social media marketing banner for "${productName}". `;
+  imagePrompt += `The product is: ${description}. `;
+  
+  if (category) {
+    imagePrompt += `Category: ${category}. `;
+  }
+  
+  imagePrompt += `Style: Modern, clean, professional marketing design with vibrant colors. `;
+  imagePrompt += `Include product imagery, attractive background, and leave space for text overlay. `;
+  imagePrompt += `Make it suitable for ${platform}. `;
+  imagePrompt += `High quality, commercial marketing aesthetic.`;
+
+  try {
+    const response = await openai.images.generate({
+      model: "dall-e-3",
+      prompt: imagePrompt,
+      n: 1,
+      size: "1024x1024",
+      quality: "standard"
+    });
+
+    return response.data[0].url;
+  } catch (error) {
+    console.error('Error generating image:', error);
+    throw new Error('Failed to generate social media image: ' + error.message);
+  }
+}
+*/
+/**
+ * Main route: Generate complete marketing assets
+ */
+router.post('/generate', upload.single('productImage'), async (req, res) => {
+  try {
+    const { productName, description, category, targetAudience, platform, tone } = req.body;
+
+    // Validate required fields
+    if (!productName || !description) {
+      return res.status(400).json({ 
+        error: 'Product name and description are required' 
+      });
+    }
+
+    const productDetails = {
+      productName,
+      description,
+      category: category || '',
+      targetAudience: targetAudience || '',
+      platform: platform || 'Instagram',
+      tone: tone || 'Professional'
+    };
+
+    // Get the uploaded image path if exists
+    const productImagePath = req.file ? req.file.path : null;
+
+    console.log('Generating marketing copy with Groq...');
+    const marketingCopy = await generateMarketingCopy(productDetails);
+
+    //console.log('Generating social media image with DALL-E...');
+    //const generatedImage = await generateSocialMediaImage(productDetails, productImagePath);
+
+    // Clean up uploaded file if it exists
+    if (productImagePath) {
+      try {
+        await fs.unlink(productImagePath);
+      } catch (err) {
+        console.error('Error deleting uploaded file:', err);
+      }
+    }
+
+    // Return results
+    res.json({
+      success: true,
+      marketingCopy,
+      //generatedImage,
+      productDetails
+    });
+
+  } catch (error) {
+    console.error('Error in marketing generation:', error);
+    
+    // Clean up uploaded file on error
+    if (req.file) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (err) {
+        console.error('Error deleting uploaded file:', err);
+      }
+    }
+
+    res.status(500).json({ 
+      error: 'Failed to generate marketing content',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Generate only marketing copy (faster endpoint)
+ */
+router.post('/generate-copy', async (req, res) => {
+  try {
+    const productDetails = req.body;
+    
+    if (!productDetails.productName || !productDetails.description) {
+      return res.status(400).json({ 
+        error: 'Product name and description are required' 
+      });
+    }
+
+    const marketingCopy = await generateMarketingCopy(productDetails);
+    
+    res.json({
+      success: true,
+      marketingCopy
+    });
+  } catch (error) {
+    console.error('Error generating copy:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate marketing copy',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Generate only social media image (faster endpoint)
+ 
+router.post('/generate-image', upload.single('productImage'), async (req, res) => {
+  try {
+    const productDetails = req.body;
+    const productImagePath = req.file ? req.file.path : null;
+    
+    if (!productDetails.productName || !productDetails.description) {
+      return res.status(400).json({ 
+        error: 'Product name and description are required' 
+      });
+    }
+
+    const generatedImage = await generateSocialMediaImage(productDetails, productImagePath);
+    
+    // Clean up uploaded file
+    if (productImagePath) {
+      try {
+        await fs.unlink(productImagePath);
+      } catch (err) {
+        console.error('Error deleting uploaded file:', err);
+      }
+    }
+    
+    res.json({
+      success: true,
+      generatedImage
+    });
+  } catch (error) {
+    console.error('Error generating image:', error);
+    
+    if (req.file) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (err) {
+        console.error('Error deleting uploaded file:', err);
+      }
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to generate image',
+      details: error.message 
+    });
+    
+  }
+  */
+// });
+
+module.exports = router;
